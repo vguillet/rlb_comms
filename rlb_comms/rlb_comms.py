@@ -20,11 +20,12 @@ from sensor_msgs.msg import JointState, LaserScan
 from rlb_utils.msg import Goal, TeamComm, CommsState
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 import numpy as np
+import pandas as pd
 import math
 
-from rlb_coordinator.Caylus_map_loader import load_maps
-from rlb_coordinator.Raster_ray_tracing import check_comms_available
-from rlb_controller.simulation_parameters import *
+from rlb_tools.Caylus_map_loader import load_maps
+from rlb_tools.Raster_ray_tracing import check_comms_available
+from rlb_config.simulation_parameters import *
 
 ##################################################################################################################
 
@@ -67,6 +68,14 @@ class RLB_comms(Node):
             qos_profile=qos
             )
         
+        # ----------------------------------- Comm matrix publisher
+        qos = QoSProfile(depth=10)
+        self.comms_state_matrix_pub = self.create_publisher(
+            msg_type=CommsState,
+            topic="/comms_state_matrix",
+            qos_profile=qos
+        )
+
         # ----------------------------------- Comms state publishers timer
         self.comms_state_pub_timer = self.create_timer(
             timer_period_sec=0.000001,
@@ -78,6 +87,42 @@ class RLB_comms(Node):
         self.check_comms_state()
 
         # -> Publish comms states
+        agents = []
+
+        for agent_pair in self.agent_pairs:
+            agents.append(agent_pair[0])
+            agents.append(agent_pair[1])
+
+        # -> Construct communication matrix
+        comms_matrix =  pd.DataFrame( 
+            index=set(agents),
+            columns=set(agents))
+
+        comms_integrities_matrix =  pd.DataFrame(
+            index=set(agents),
+            columns=set(agents))
+
+        for agent_pair in self.agent_pairs:
+            # -> Fill in matrix booleans
+            comms_matrix[agent_pair[0]][agent_pair[1]] = self.comm_rays[agent_pair]["comm_state"]
+            comms_matrix[agent_pair[1]][agent_pair[0]] = self.comm_rays[agent_pair]["comm_state"]
+
+            # -> Store integrity profiles
+            comms_integrities_matrix[agent_pair[0]][agent_pair[1]] = self.comm_rays[agent_pair]["comms_integrity_profile"]
+            comms_integrities_matrix[agent_pair[1]][agent_pair[0]] = self.comm_rays[agent_pair]["comms_integrity_profile"]
+
+        msg = CommsState()
+        msg.comms_states = json.dumps(
+            {
+                "comms_state_matrix": comms_matrix.to_json(),
+                "comms_integrity_matrix": comms_integrities_matrix.to_json(),
+                }
+        )
+
+        print(msg)
+
+        self.comms_state_matrix_pub.publish(msg)
+
         for agent in self.team_members.keys():
             msg = CommsState()
             msg.robot_id = agent
@@ -91,14 +136,15 @@ class RLB_comms(Node):
                         "comm_state": self.comm_rays[agent_pair]["comm_state"],
                         "comms_integrity_profile": self.comm_rays[agent_pair]["comms_integrity_profile"]
                     }
+
             msg.comms_states = json.dumps(comms_state)
 
             # -> Publish msg
             self.team_members[agent]["comm_state_publisher"].publish(msg)
 
     def convert_coords_room_to_pixel(self, point_room):
-        from rlb_controller.simulation_parameters import images_shape
-        from rlb_controller.room_paramters import room_x_range, room_y_range
+        from rlb_config.simulation_parameters import images_shape
+        from rlb_config.room_paramters import room_x_range, room_y_range
 
         # -> Calculating differences
         dx_img = images_shape[0]
@@ -185,7 +231,7 @@ class RLB_comms(Node):
 
         self.team_members[msg.robot_id]["comm_state_publisher"] = self.create_publisher(
             msg_type=CommsState,
-            topic=f"/{msg.robot_id}/Comms_state",
+            topic=f"/{msg.robot_id}/comms_state",
             qos_profile=qos
         )
 
