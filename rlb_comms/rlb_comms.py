@@ -69,7 +69,12 @@ class RLB_comms(Node):
             )
         
         # ----------------------------------- Comm matrix publisher
-        qos = QoSProfile(depth=10)
+        qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
+            history=QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,
+            depth=1
+            )
+
         self.comms_state_matrix_pub = self.create_publisher(
             msg_type=CommsState,
             topic="/comms_state_matrix",
@@ -118,8 +123,6 @@ class RLB_comms(Node):
                 "comms_integrity_matrix": comms_integrities_matrix.to_json(),
                 }
         )
-
-        print(msg)
 
         self.comms_state_matrix_pub.publish(msg)
 
@@ -174,26 +177,37 @@ class RLB_comms(Node):
         return agent_pairs
 
     def team_msg_subscriber_callback(self, msg):
-        if msg.robot_id not in self.team_members.keys():
+        if msg.source not in self.team_members.keys() and msg.source_type == "robot":
             self.add_robot(msg=msg)
+            print(f"-> Found {msg.source}")
 
     def check_comms_state(self):
-        # -> Check if comms are available for every agent tracked
-        for agent_pair in self.agent_pairs:
-            x1 = round(self.team_members[agent_pair[0]]["pose"]["x"], 3)
-            y1 = round(self.team_members[agent_pair[0]]["pose"]["y"], 3)
+        try:
+            # -> Check if comms are available for every agent tracked
+            for agent_pair in self.agent_pairs:
+                if pose_tracked == "room":
+                    key = "pose"
 
-            x2 = round(self.team_members[agent_pair[1]]["pose"]["x"], 3)
-            y2 = round(self.team_members[agent_pair[1]]["pose"]["y"], 3)
+                elif pose_tracked == "projected":
+                    key = "pose_projected"
 
-            # -> Check comms state
-            point_1_pix = self.convert_coords_room_to_pixel(point_room=(x1, y1))
-            point_2_pix = self.convert_coords_room_to_pixel(point_room=(x2, y2))
+                x1 = round(self.team_members[agent_pair[0]][key]["x"], 3)
+                y1 = round(self.team_members[agent_pair[0]][key]["y"], 3)
 
-            self.comm_rays[agent_pair]["comm_state"], self.comm_rays[agent_pair]["comms_integrity_profile"], ray_coordinates = check_comms_available(
-                pose_1=point_1_pix,
-                pose_2=point_2_pix,
-                obstacle_probabilities_grid=self.signal_blocking_prob_grid)
+                x2 = round(self.team_members[agent_pair[1]][key]["x"], 3)
+                y2 = round(self.team_members[agent_pair[1]][key]["y"], 3)
+
+                if isinstance(x1, float) and isinstance(y1, float) and isinstance(x2, float) and isinstance(y1, float): 
+                    # -> Check comms state
+                    point_1_pix = self.convert_coords_room_to_pixel(point_room=(x1, y1))
+                    point_2_pix = self.convert_coords_room_to_pixel(point_room=(x2, y2))
+
+                    self.comm_rays[agent_pair]["comm_state"], self.comm_rays[agent_pair]["comms_integrity_profile"], ray_coordinates = check_comms_available(
+                        pose_1=point_1_pix,
+                        pose_2=point_2_pix,
+                        obstacle_probabilities_grid=self.signal_blocking_prob_grid)
+        except:
+            pass
 
     def pose_subscriber_callback(self, robot_id, msg):
         # -> Update position
@@ -208,12 +222,36 @@ class RLB_comms(Node):
         self.team_members[robot_id]["pose"]["v"] = v
         self.team_members[robot_id]["pose"]["w"] = w
 
+    def pose_projected_subscriber_callback(self, robot_id, msg):
+        # -> Update position
+        self.team_members[robot_id]["pose_projected"]["x"] = msg.pose.position.x
+        self.team_members[robot_id]["pose_projected"]["y"] = msg.pose.position.y
+        self.team_members[robot_id]["pose_projected"]["z"] = msg.pose.position.z
+
+        # -> Update orientation
+        u, v, w = self.__euler_from_quaternion(quat=msg.pose.orientation)
+
+        self.team_members[robot_id]["pose_projected"]["u"] = u
+        self.team_members[robot_id]["pose_projected"]["v"] = v
+        self.team_members[robot_id]["pose_projected"]["w"] = w
+
     def add_robot(self, msg):
         # ---------------- Add team member entry to team members dict
-        self.team_members[msg.robot_id] = {
+        self.team_members[msg.source] = {
             # -> Pose setup
             "pose_subscriber": None,
             "pose": {
+                "x": 0.,
+                "y": 0.,
+                "z": 0.,
+                "u": 0.,
+                "v": 0.,
+                "w": 0.
+                },
+
+            # -> Pose projected setup
+            "pose_projected_subscriber": None,
+            "pose_projected": {
                 "x": 0.,
                 "y": 0.,
                 "z": 0.,
@@ -227,11 +265,15 @@ class RLB_comms(Node):
         }
 
         # -> Create comm state publisher
-        qos = QoSProfile(depth=10)
+        qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
+            history=QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,
+            depth=1
+            )
 
-        self.team_members[msg.robot_id]["comm_state_publisher"] = self.create_publisher(
+        self.team_members[msg.source]["comm_state_publisher"] = self.create_publisher(
             msg_type=CommsState,
-            topic=f"/{msg.robot_id}/comms_state",
+            topic=f"/{msg.source}/sim/comms_state",
             qos_profile=qos
         )
 
@@ -250,10 +292,24 @@ class RLB_comms(Node):
             depth=1
             )
 
-        self.team_members[msg.robot_id]["pose_subscriber"] = self.create_subscription(
+        self.team_members[msg.source]["pose_subscriber"] = self.create_subscription(
             msg_type=PoseStamped,
-            topic=f"/{msg.robot_id}/pose",
-            callback=partial(self.pose_subscriber_callback, msg.robot_id),
+            topic=f"/{msg.source}/state/pose",
+            callback=partial(self.pose_subscriber_callback, msg.source),
+            qos_profile=qos
+            )
+
+        # -> Create pose projected subscribers
+        qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
+            history=QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,
+            depth=1
+            )
+
+        self.team_members[msg.source]["pose_projected_subscriber"] = self.create_subscription(
+            msg_type=PoseStamped,
+            topic=f"/{msg.source}/state/pose_projected",
+            callback=partial(self.pose_projected_subscriber_callback, msg.source),
             qos_profile=qos
             )
 
