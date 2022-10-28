@@ -63,7 +63,7 @@ class RLB_comms(Node):
 
         self.team_comms_subscriber = self.create_subscription(
             msg_type=TeamComm,
-            topic="/team_comms",
+            topic="/rlb_msgs",
             callback=self.team_msg_subscriber_callback,
             qos_profile=qos
             )
@@ -294,7 +294,7 @@ class RLB_comms(Node):
 
         self.team_members[msg.source]["pose_subscriber"] = self.create_subscription(
             msg_type=PoseStamped,
-            topic=f"/{msg.source}/state/pose",
+            topic=f"/{msg.source}/pose",
             callback=partial(self.pose_subscriber_callback, msg.source),
             qos_profile=qos
             )
@@ -308,7 +308,7 @@ class RLB_comms(Node):
 
         self.team_members[msg.source]["pose_projected_subscriber"] = self.create_subscription(
             msg_type=PoseStamped,
-            topic=f"/{msg.source}/state/pose_projected",
+            topic=f"/{msg.source}/pose_projected",
             callback=partial(self.pose_projected_subscriber_callback, msg.source),
             qos_profile=qos
             )
